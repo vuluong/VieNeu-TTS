@@ -1,70 +1,76 @@
-from vieneu_tts import VieNeuTTS
-from utils.normalize_text import VietnameseTTSNormalizer
-import soundfile as sf
 import os
+import time
+import soundfile as sf
+import torch
+
+from utils.logging import setup_logging, get_logger
+from vieneutts import VieNeuTTS
+
+# Hiệu năng
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.set_float32_matmul_precision("high")
+torch.backends.cudnn.benchmark = True
+
+setup_logging(run_name="vieneu-main", to_file=True, log_dir="logs", level="INFO")
+log = get_logger("app.main")
+
+def _gpu_mem_log(note: str = ""):
+    if torch.cuda.is_available():
+        alloc = torch.cuda.memory_allocated() / (1024**2)
+        resvd = torch.cuda.memory_reserved() / (1024**2)
+        peak = torch.cuda.max_memory_allocated() / (1024**2)
+        log.info("GPU VRAM%s alloc=%.1fMB,resvd=%.1fMB,peak=%.1fMB",
+                 f" [{note}]" if note else "", alloc, resvd, peak)
 
 input_texts = [
     "Các khóa học trực tuyến đang giúp học sinh tiếp cận kiến thức mọi lúc mọi nơi. Giáo viên sử dụng video, bài tập tương tác và thảo luận trực tuyến để nâng cao hiệu quả học tập.",
-
     "Các nghiên cứu về bệnh Alzheimer cho thấy tác dụng tích cực của các bài tập trí não và chế độ dinh dưỡng lành mạnh, giúp giảm tốc độ suy giảm trí nhớ ở người cao tuổi.",
-
     "Một tiểu thuyết trinh thám hiện đại dẫn dắt độc giả qua những tình tiết phức tạp, bí ẩn, kết hợp yếu tố tâm lý sâu sắc khiến người đọc luôn hồi hộp theo dõi diễn biến câu chuyện.",
-
     "Các nhà khoa học nghiên cứu gen người phát hiện những đột biến mới liên quan đến bệnh di truyền. Điều này giúp nâng cao khả năng chẩn đoán và điều trị.",
 ]
-
-normalizer = VietnameseTTSNormalizer()
 
 output_dir = "./output_audio"
 os.makedirs(output_dir, exist_ok=True)
 
 def main(backbone="pnnbao-ump/VieNeu-TTS", codec="neuphonic/neucodec"):
-    """
-    Trong thư mục sample, có 7 file wav và 7 file txt, các file wav và txt có cùng tên. Đây là những file chuẩn được mình chuẩn bị cho các bạn test.
-    Ví dụ: id_0001.wav và id_0001.txt
-    Ví dụ: id_0002.wav và id_0002.txt
-    Ví dụ: id_0003.wav và id_0003.txt
-    Ví dụ: id_0004.wav và id_0004.txt
-    Ví dụ: id_0005.wav và id_0005.txt
-    Ví dụ: id_0006.wav và id_0006.txt
-    Ví dụ: id_0007.wav và id_0007.txt
-    Các file số lẻ là nam giới, các file số chẵn là nữ giới. Các bạn có thể chọn file wav và txt tương ứng để test.
-    Lưu ý: model vẫn có thể clone giọng của audio bạn đưa vào (kèm text tương ứng). Tuy nhiên, chất lượng có thể không được tốt như các file trong thư mục sample. Các bạn có thể finetune model này trên giọng các bạn cần clone để có chất lượng tốt nhất.
-    Các bạn có thể tham khảo cách finetune model tại https://github.com/pnnbao-ump/VieNeuTTS/blob/main/finetune.ipynb
-    """
-    # Nam miền Nam
-    ref_audio_path = "./sample/id_0004.wav"
-    ref_text = "./sample/id_0004.txt"
-    # Nữ miền Nam
-    # ref_audio_path = "./sample/id_0002.wav"
-    # ref_text = "./sample/id_0002.txt"
+    # Chọn sample tham chiếu
+    ref_audio_path = "./sample/id_0004.wav"  # Nữ 2
+    ref_text_path = "./sample/id_0004.txt"
 
-    ref_text_path = ref_text
-    ref_text_raw = open(ref_text_path, "r", encoding="utf-8").read()
-    if not ref_audio_path or not ref_text_raw:
-        print("No reference audio or text provided.")
-        return None
-    normalized_ref_text = normalizer.normalize(ref_text_raw)
+    if not os.path.exists(ref_audio_path) or not os.path.exists(ref_text_path):
+        log.error("Thiếu reference audio/text.")
+        return
 
-    # Initialize VieNeuTTS with the desired model and codec
+    with open(ref_text_path, "r", encoding="utf-8") as f:
+        ref_text = f.read()
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    log.info("Thiết bị: %s", device.upper())
+
     tts = VieNeuTTS(
         backbone_repo=backbone,
-        backbone_device="cuda",
+        backbone_device=device,
         codec_repo=codec,
-        codec_device="cuda"
+        codec_device=device
     )
+    _gpu_mem_log("sau load model")
 
-    print("Encoding reference audio")
+    log.info("Encoding reference audio: %s", ref_audio_path)
+    t0 = time.perf_counter()
     ref_codes = tts.encode_reference(ref_audio_path)
+    log.info("encode_reference() %.1f ms", (time.perf_counter() - t0) * 1000)
+    _gpu_mem_log("sau encode_reference")
 
-    # Loop through all input texts
     for i, text in enumerate(input_texts, 1):
-        print(f"Generating audio for example {i}: {text}")
-        normalized_text = normalizer.normalize(text)
-        wav = tts.infer(normalized_text, ref_codes, normalized_ref_text)
-        output_path = os.path.join(output_dir, f"output_{i}.wav")
-        sf.write(output_path, wav, 24000)
-        print(f"Saved to {output_path}")
+        log.info("Generating example %d | len(text)=%d", i, len(text))
+        t0 = time.perf_counter()
+        with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.float16, enabled=(device=="cuda")):
+            wav = tts.infer(text, ref_codes, ref_text)
+        dt = (time.perf_counter() - t0) * 1000
+        out = os.path.join(output_dir, f"output_{i}.wav")
+        sf.write(out, wav, 24000)
+        log.info("Saved %s | infer=%.1f ms | dur=%.2fs", out, dt, wav.shape[-1] / 24000)
+        _gpu_mem_log(f"after example {i}")
 
 if __name__ == "__main__":
     main()

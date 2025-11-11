@@ -1,7 +1,10 @@
 phonemizer>=3.3.0
-torch
-torchvision
-torchaudio
+# torch
+# torchvision
+# torchaudio
 gradio
 neucodec>=0.0.4
 librosa>=0.11.0
+
+#pip install "transformers[torch]"
+#pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu126
