@@ -14,7 +14,7 @@ log = get_logger("app.gradio")
 
 log.info("Khởi động VieNeu-TTS (Gradio) ...")
 
-from vieneutts import VieNeuTTS
+from vieneu_tts.vieneu_tts import VieNeuTTS
 
 # --- cấu hình thư mục output ---
 OUTPUT_DIR = "output_audio"
